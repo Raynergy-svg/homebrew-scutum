@@ -7,6 +7,9 @@ Homebrew tap for Scutum.
 ```zsh
 brew tap Raynergy-svg/scutum
 brew install irondome-sentinel
+
+# Recommended onboarding
+irondome-sentinel-setup
 ```
 
 ## Notes
