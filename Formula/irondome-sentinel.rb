@@ -124,20 +124,19 @@ USAGE
 
       config_dir="$HOME/Library/Application Support/IronDome"
       config_path="$config_dir/config.json"
-      existing_router_model="$($PYTHON3 - "$config_path" 2>/dev/null <<'PY'
+      existing_router_model="$($PYTHON3 -c '
 import json, sys
-path = sys.argv[1]
+p = sys.argv[1]
 try:
-  with open(path, 'r', encoding='utf-8') as f:
+  with open(p, "r", encoding="utf-8") as f:
     obj = json.load(f)
-  if isinstance(obj, dict):
-    v = obj.get('router_model', '')
-    if isinstance(v, str) and v.strip():
-      print(v.strip())
 except Exception:
-  pass
-PY
-)"
+  obj = {}
+if isinstance(obj, dict):
+  v = obj.get("router_model", "")
+  if isinstance(v, str) and v.strip():
+    print(v.strip())
+' "$config_path" 2>/dev/null || true)"
       existing_router_model="${existing_router_model:-spectrum}"
 
       sentinel_to="$(prompt_default "SENTINEL_TO (phone or Apple ID email)" "$existing_to")"
@@ -162,29 +161,29 @@ PY
       /usr/bin/plutil -lint "$plist" >/dev/null
 
       /bin/mkdir -p "$config_dir"
-      "$PYTHON3" - "$config_path" "$router_model" <<'PY'
+      "$PYTHON3" -c '
 import json, os, sys
 path = sys.argv[1]
-router_model = (sys.argv[2] or '').strip() or 'spectrum'
+router_model = (sys.argv[2] or "").strip() or "spectrum"
 
 data = {}
 try:
   if os.path.exists(path):
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, "r", encoding="utf-8") as f:
       obj = json.load(f)
       if isinstance(obj, dict):
         data = obj
 except Exception:
   data = {}
 
-data['router_model'] = router_model
+data["router_model"] = router_model
 
-tmp = path + '.tmp'
-with open(tmp, 'w', encoding='utf-8') as f:
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
   json.dump(data, f, ensure_ascii=False, indent=2)
-  f.write('\n')
+  f.write("\n")
 os.replace(tmp, path)
-PY
+' "$config_path" "$router_model"
 
       uidn="$(/usr/bin/id -u)"
       label="com.irondome.sentinel"
