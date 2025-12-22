@@ -3,7 +3,7 @@ class IrondomeSentinel < Formula
   homepage "https://github.com/Raynergy-svg/Scutum"
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
-  revision 1
+  revision 2
   license "MIT"
 
   depends_on "python"
@@ -11,10 +11,15 @@ class IrondomeSentinel < Formula
   def install
     libexec.install Dir["*"]
 
-    # Primary command
-    (bin/"irondome-sentinel").write_env_script pkgshare/"scripts/irondome-sentinel.py", {
-      "PYTHONUNBUFFERED" => "1",
-    }
+    python3 = Formula["python"].opt_bin/"python3"
+
+    (bin/"irondome-sentinel").write <<~EOS
+      #!/bin/bash
+      export PYTHONUNBUFFERED=1
+      exec "#{python3}" "#{pkgshare}/scripts/irondome-sentinel.py" "$@"
+    EOS
+
+    chmod 0755, bin/"irondome-sentinel"
 
     # Alias command
     bin.install_symlink "irondome-sentinel" => "irondome"
