@@ -1,5 +1,5 @@
 class IrondomeSentinel < Formula
-  desc "Irondome-Sentinel macOS LaunchAgent + local defensive pipeline"
+  desc "macOS LaunchAgent + local defensive pipeline"
   homepage "https://github.com/Raynergy-svg/Scutum"
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
