@@ -1,10 +1,10 @@
 class IrondomeSentinel < Formula
   desc "macOS LaunchAgent + local defensive pipeline"
-  homepage "https://github.com/Raynergy-svg/Scutum"
-  url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
+  homepage "https://raw.githubusercontent.com/Raynergy-svg/Scutum/v1.0.0/irondome-README.md"
+  url "https://codeload.github.com/Raynergy-svg/Scutum/tar.gz/v1.0.0"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
   license "MIT"
-  revision 5
+  revision 6
 
   depends_on "python"
 
