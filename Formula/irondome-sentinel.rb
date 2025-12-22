@@ -22,11 +22,11 @@ class IrondomeSentinel < Formula
     chmod 0755, bin/"irondome-sentinel"
 
     setup = <<~'EOS'
-        #!/bin/bash
-        set -euo pipefail
+      #!/bin/bash
+      set -euo pipefail
 
-        PKGSHARE="__PKGSHARE__"
-        PYTHON3="__PYTHON3__"
+      PKGSHARE="__PKGSHARE__"
+      PYTHON3="__PYTHON3__"
 
         usage() {
           /usr/bin/printf '%s\n' "irondome-sentinel-setup"
