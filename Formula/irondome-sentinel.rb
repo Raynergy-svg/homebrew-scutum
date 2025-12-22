@@ -191,7 +191,10 @@ class IrondomeSentinel < Formula
   /usr/bin/printf '%s\n' "  - Automation: allow Messages access for $PYTHON3"
     EOS
 
-    (bin/"irondome-sentinel-setup").write setup.gsub("__PKGSHARE__", opt_pkgshare.to_s).gsub("__PYTHON3__", python3.to_s)
+    (bin/"irondome-sentinel-setup").write(
+      setup.gsub("__PKGSHARE__", opt_pkgshare.to_s)
+           .gsub("__PYTHON3__", python3.to_s),
+    )
 
     chmod 0755, bin/"irondome-sentinel-setup"
 
