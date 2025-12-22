@@ -4,7 +4,7 @@ class IrondomeSentinel < Formula
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
   license "MIT"
-  revision 6
+  revision 9
 
   depends_on "python"
 
@@ -104,7 +104,7 @@ class IrondomeSentinel < Formula
         /usr/bin/printf '%s\n' "(This will install/reload the LaunchAgent, then prompt for your preferences.)"
         /usr/bin/printf '\n'
 
-        /bin/zsh "$PKGSHARE/scripts/irondome-sentinel-install-launchagent.zsh" >/dev/null
+        /bin/zsh "$PKGSHARE/scripts/irondome-sentinel-install-launchagent.zsh" >/dev/null 2>&1 || true
 
         plist="$HOME/Library/LaunchAgents/com.irondome.sentinel.plist"
         if [[ ! -f "$plist" ]]; then
@@ -117,9 +117,18 @@ class IrondomeSentinel < Formula
         existing_interval="$(pb_get "$plist" ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS" || true)"
         existing_interval="${existing_interval:-60}"
 
+        # The shipped LaunchAgent template historically included a placeholder number.
+        # Never present that as the user's default.
+        if [[ "$existing_to" == "+14133550676" ]]; then
+          existing_to=""
+        fi
+        if [[ "$existing_allowed" == "+14133550676" ]]; then
+          existing_allowed=""
+        fi
+
         config_dir="$HOME/Library/Application Support/IronDome"
         config_path="$config_dir/config.json"
-        existing_router_model="$("$PYTHON3" -c 'import sys; exec("import json,os\np=sys.argv[1]\ntry:\n  with open(p, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\nexcept Exception: obj={}\nv=obj.get(\\\"router_model\\\", \\\"\\\") if isinstance(obj, dict) else \\\"\\\"\nprint(v.strip() if isinstance(v, str) else \\\"\\\")\n")' "$config_path" 2>/dev/null || true)"
+        existing_router_model="$(/usr/bin/plutil -extract router_model raw -o - "$config_path" 2>/dev/null || true)"
         existing_router_model="${existing_router_model:-spectrum}"
 
         sentinel_to="$(prompt_default "SENTINEL_TO (phone or Apple ID email)" "$existing_to")"
@@ -144,7 +153,10 @@ class IrondomeSentinel < Formula
         /usr/bin/plutil -lint "$plist" >/dev/null
 
         /bin/mkdir -p "$config_dir"
-        "$PYTHON3" -c 'import sys; exec("import json,os\npath=sys.argv[1]\nrouter_model=(sys.argv[2] if len(sys.argv)>2 else \\\"\\\").strip() or \\\"spectrum\\\"\ndata={}\ntry:\n  if os.path.exists(path):\n    with open(path, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\n  else:\n    obj={}\nexcept Exception: obj={}\ndata=obj if isinstance(obj, dict) else {}\ndata[\\\"router_model\\\"]=router_model\ntmp=path+\\\".tmp\\\"\nwith open(tmp, \\\"w\\\", encoding=\\\"utf-8\\\") as f:\n  json.dump(data, f, ensure_ascii=False, indent=2)\n  f.write(\\\"\\\\n\\\")\nos.replace(tmp, path)\n")' "$config_path" "$router_model"
+        if [[ ! -f "$config_path" ]]; then
+          /usr/bin/printf '%s\n' '{}' >"$config_path"
+        fi
+        /usr/bin/plutil -replace router_model -string "$router_model" "$config_path"
 
         uidn="$(/usr/bin/id -u)"
         label="com.irondome.sentinel"
@@ -183,6 +195,17 @@ class IrondomeSentinel < Formula
     pkgshare.install libexec/"launchd"
     pkgshare.install libexec/"scripts"
     pkgshare.install libexec/"docker-compose.yaml" if (libexec/"docker-compose.yaml").exist?
+
+    # Remove any placeholder values from the shipped LaunchAgent template.
+    inreplace pkgshare/"launchd/com.irondome.sentinel.plist",
+          "<string>+14133550676</string>",
+          "<string></string>"
+
+    # The installer script prints the launchctl service; on first install the service may not exist yet.
+    # Avoid exiting non-zero (and emitting an alarming error) in that case.
+    inreplace pkgshare/"scripts/irondome-sentinel-install-launchagent.zsh",
+              'launchctl print "gui/$uidn/$label" | head -n 80',
+              'launchctl print "gui/$uidn/$label" 2>/dev/null | head -n 80 || true'
   end
 
   def caveats
