@@ -119,13 +119,7 @@ class IrondomeSentinel < Formula
 
         config_dir="$HOME/Library/Application Support/IronDome"
         config_path="$config_dir/config.json"
-        existing_router_model="$("$PYTHON3" -c 'import sys; exec("import json,os\n" \
-      "p=sys.argv[1]\n" \
-      "try:\n" \
-      "  with open(p, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\n" \
-      "except Exception: obj={}\n" \
-      "v=obj.get(\\\"router_model\\\", \\\"\\\") if isinstance(obj, dict) else \\\"\\\"\n" \
-      "print(v.strip() if isinstance(v, str) else \\\"\\\")\n")' "$config_path" 2>/dev/null || true)"
+        existing_router_model="$("$PYTHON3" -c 'import sys; exec("import json,os\np=sys.argv[1]\ntry:\n  with open(p, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\nexcept Exception: obj={}\nv=obj.get(\\\"router_model\\\", \\\"\\\") if isinstance(obj, dict) else \\\"\\\"\nprint(v.strip() if isinstance(v, str) else \\\"\\\")\n")' "$config_path" 2>/dev/null || true)"
         existing_router_model="${existing_router_model:-spectrum}"
 
         sentinel_to="$(prompt_default "SENTINEL_TO (phone or Apple ID email)" "$existing_to")"
@@ -150,23 +144,7 @@ class IrondomeSentinel < Formula
         /usr/bin/plutil -lint "$plist" >/dev/null
 
         /bin/mkdir -p "$config_dir"
-        "$PYTHON3" -c 'import sys; exec("import json,os\n" \
-      "path=sys.argv[1]\n" \
-      "router_model=(sys.argv[2] if len(sys.argv)>2 else \\\"\\\").strip() or \\\"spectrum\\\"\n" \
-      "data={}\n" \
-      "try:\n" \
-      "  if os.path.exists(path):\n" \
-      "    with open(path, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\n" \
-      "  else:\n" \
-      "    obj={}\n" \
-      "except Exception: obj={}\n" \
-      "data=obj if isinstance(obj, dict) else {}\n" \
-      "data[\\\"router_model\\\"]=router_model\n" \
-      "tmp=path+\\\".tmp\\\"\n" \
-      "with open(tmp, \\\"w\\\", encoding=\\\"utf-8\\\") as f:\n" \
-      "  json.dump(data, f, ensure_ascii=False, indent=2)\n" \
-      "  f.write(\\\"\\\\n\\\")\n" \
-      "os.replace(tmp, path)\n")' "$config_path" "$router_model"
+        "$PYTHON3" -c 'import sys; exec("import json,os\npath=sys.argv[1]\nrouter_model=(sys.argv[2] if len(sys.argv)>2 else \\\"\\\").strip() or \\\"spectrum\\\"\ndata={}\ntry:\n  if os.path.exists(path):\n    with open(path, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\n  else:\n    obj={}\nexcept Exception: obj={}\ndata=obj if isinstance(obj, dict) else {}\ndata[\\\"router_model\\\"]=router_model\ntmp=path+\\\".tmp\\\"\nwith open(tmp, \\\"w\\\", encoding=\\\"utf-8\\\") as f:\n  json.dump(data, f, ensure_ascii=False, indent=2)\n  f.write(\\\"\\\\n\\\")\nos.replace(tmp, path)\n")' "$config_path" "$router_model"
 
         uidn="$(/usr/bin/id -u)"
         label="com.irondome.sentinel"
