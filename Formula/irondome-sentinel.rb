@@ -4,7 +4,7 @@ class IrondomeSentinel < Formula
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
   license "MIT"
-  revision 4
+  revision 5
 
   depends_on "python"
 
@@ -29,19 +29,17 @@ class IrondomeSentinel < Formula
       PYTHON3="#{python3}"
 
       usage() {
-        cat <<USAGE
-  irondome-sentinel-setup
-
-  Interactive post-install setup:
-  - Prompts for SENTINEL_TO, SENTINEL_ALLOWED_HANDLES, IRONDOME_INTERVAL_SECONDS
-  - Updates ~/Library/LaunchAgents/com.irondome.sentinel.plist EnvironmentVariables
-  - Updates ~/Library/Application Support/IronDome/config.json (router_model)
-  - Reloads the LaunchAgent
-
-  Usage:
-    irondome-sentinel-setup
-    irondome-sentinel-setup --help
-USAGE
+        /usr/bin/printf '%s\n' "irondome-sentinel-setup"
+        /usr/bin/printf '%s\n' ""
+        /usr/bin/printf '%s\n' "Interactive post-install setup:"
+        /usr/bin/printf '%s\n' "- Prompts for SENTINEL_TO, SENTINEL_ALLOWED_HANDLES, IRONDOME_INTERVAL_SECONDS"
+        /usr/bin/printf '%s\n' "- Updates ~/Library/LaunchAgents/com.irondome.sentinel.plist EnvironmentVariables"
+        /usr/bin/printf '%s\n' "- Updates ~/Library/Application Support/IronDome/config.json (router_model)"
+        /usr/bin/printf '%s\n' "- Reloads the LaunchAgent"
+        /usr/bin/printf '%s\n' ""
+        /usr/bin/printf '%s\n' "Usage:"
+        /usr/bin/printf '%s\n' "  irondome-sentinel-setup"
+        /usr/bin/printf '%s\n' "  irondome-sentinel-setup --help"
       }
 
       if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -124,19 +122,13 @@ USAGE
 
       config_dir="$HOME/Library/Application Support/IronDome"
       config_path="$config_dir/config.json"
-      existing_router_model="$($PYTHON3 -c '
-import json, sys
-p = sys.argv[1]
-try:
-  with open(p, "r", encoding="utf-8") as f:
-    obj = json.load(f)
-except Exception:
-  obj = {}
-if isinstance(obj, dict):
-  v = obj.get("router_model", "")
-  if isinstance(v, str) and v.strip():
-    print(v.strip())
-' "$config_path" 2>/dev/null || true)"
+      existing_router_model="$("$PYTHON3" -c 'import sys; exec("import json,os\n" \
+"p=sys.argv[1]\n" \
+"try:\n" \
+"  with open(p, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\n" \
+"except Exception: obj={}\n" \
+"v=obj.get(\\\"router_model\\\", \\\"\\\") if isinstance(obj, dict) else \\\"\\\"\n" \
+"print(v.strip() if isinstance(v, str) else \\\"\\\")\n")' "$config_path" 2>/dev/null || true)"
       existing_router_model="${existing_router_model:-spectrum}"
 
       sentinel_to="$(prompt_default "SENTINEL_TO (phone or Apple ID email)" "$existing_to")"
@@ -161,29 +153,23 @@ if isinstance(obj, dict):
       /usr/bin/plutil -lint "$plist" >/dev/null
 
       /bin/mkdir -p "$config_dir"
-      "$PYTHON3" -c '
-import json, os, sys
-path = sys.argv[1]
-router_model = (sys.argv[2] or "").strip() or "spectrum"
-
-data = {}
-try:
-  if os.path.exists(path):
-    with open(path, "r", encoding="utf-8") as f:
-      obj = json.load(f)
-      if isinstance(obj, dict):
-        data = obj
-except Exception:
-  data = {}
-
-data["router_model"] = router_model
-
-tmp = path + ".tmp"
-with open(tmp, "w", encoding="utf-8") as f:
-  json.dump(data, f, ensure_ascii=False, indent=2)
-  f.write("\n")
-os.replace(tmp, path)
-' "$config_path" "$router_model"
+      "$PYTHON3" -c 'import sys; exec("import json,os\n" \
+"path=sys.argv[1]\n" \
+"router_model=(sys.argv[2] if len(sys.argv)>2 else \\\"\\\").strip() or \\\"spectrum\\\"\n" \
+"data={}\n" \
+"try:\n" \
+"  if os.path.exists(path):\n" \
+"    with open(path, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\n" \
+"  else:\n" \
+"    obj={}\n" \
+"except Exception: obj={}\n" \
+"data=obj if isinstance(obj, dict) else {}\n" \
+"data[\\\"router_model\\\"]=router_model\n" \
+"tmp=path+\\\".tmp\\\"\n" \
+"with open(tmp, \\\"w\\\", encoding=\\\"utf-8\\\") as f:\n" \
+"  json.dump(data, f, ensure_ascii=False, indent=2)\n" \
+"  f.write(\\\"\\\\n\\\")\n" \
+"os.replace(tmp, path)\n")' "$config_path" "$router_model"
 
       uidn="$(/usr/bin/id -u)"
       label="com.irondome.sentinel"
