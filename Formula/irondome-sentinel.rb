@@ -3,8 +3,8 @@ class IrondomeSentinel < Formula
   homepage "https://github.com/Raynergy-svg/Scutum"
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
-  revision 3
   license "MIT"
+  revision 4
 
   depends_on "python"
 
@@ -30,17 +30,17 @@ class IrondomeSentinel < Formula
 
       usage() {
         cat <<USAGE
-irondome-sentinel-setup
-
-Interactive post-install setup:
-- Prompts for SENTINEL_TO, SENTINEL_ALLOWED_HANDLES, IRONDOME_INTERVAL_SECONDS
-- Updates ~/Library/LaunchAgents/com.irondome.sentinel.plist EnvironmentVariables
-- Updates ~/Library/Application Support/IronDome/config.json (router_model)
-- Reloads the LaunchAgent
-
-Usage:
   irondome-sentinel-setup
-  irondome-sentinel-setup --help
+
+  Interactive post-install setup:
+  - Prompts for SENTINEL_TO, SENTINEL_ALLOWED_HANDLES, IRONDOME_INTERVAL_SECONDS
+  - Updates ~/Library/LaunchAgents/com.irondome.sentinel.plist EnvironmentVariables
+  - Updates ~/Library/Application Support/IronDome/config.json (router_model)
+  - Reloads the LaunchAgent
+
+  Usage:
+    irondome-sentinel-setup
+    irondome-sentinel-setup --help
 USAGE
       }
 
