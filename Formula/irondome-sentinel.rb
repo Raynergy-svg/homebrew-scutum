@@ -4,7 +4,7 @@ class IrondomeSentinel < Formula
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
   license "MIT"
-  revision 9
+  revision 12
 
   depends_on "python"
 
@@ -33,7 +33,7 @@ class IrondomeSentinel < Formula
           /usr/bin/printf '%s\n' ""
           /usr/bin/printf '%s\n' "Interactive post-install setup:"
           /usr/bin/printf '%s\n' "- Prompts for SENTINEL_TO, SENTINEL_ALLOWED_HANDLES, IRONDOME_INTERVAL_SECONDS"
-          /usr/bin/printf '%s\n' "- Updates ~/Library/LaunchAgents/com.irondome.sentinel.plist EnvironmentVariables"
+          /usr/bin/printf '%s\n' "- Updates ~/Library/LaunchAgents/com.tortuga.scutum.sentinel.plist EnvironmentVariables"
           /usr/bin/printf '%s\n' "- Updates ~/Library/Application Support/IronDome/config.json (router_model)"
           /usr/bin/printf '%s\n' "- Reloads the LaunchAgent"
           /usr/bin/printf '%s\n' ""
@@ -106,7 +106,7 @@ class IrondomeSentinel < Formula
 
         /bin/zsh "$PKGSHARE/scripts/irondome-sentinel-install-launchagent.zsh" >/dev/null 2>&1 || true
 
-        plist="$HOME/Library/LaunchAgents/com.irondome.sentinel.plist"
+        plist="$HOME/Library/LaunchAgents/com.tortuga.scutum.sentinel.plist"
         if [[ ! -f "$plist" ]]; then
           /usr/bin/printf '%s\n' "ERROR: expected LaunchAgent plist at: $plist" >&2
           exit 1
@@ -159,7 +159,7 @@ class IrondomeSentinel < Formula
         /usr/bin/plutil -replace router_model -string "$router_model" "$config_path"
 
         uidn="$(/usr/bin/id -u)"
-        label="com.irondome.sentinel"
+        label="com.tortuga.scutum.sentinel"
         gui_target="gui/$uidn"
 
         /bin/launchctl bootout "$gui_target" "$plist" >/dev/null 2>&1 || true
@@ -196,16 +196,283 @@ class IrondomeSentinel < Formula
     pkgshare.install libexec/"scripts"
     pkgshare.install libexec/"docker-compose.yaml" if (libexec/"docker-compose.yaml").exist?
 
-    # Remove any placeholder values from the shipped LaunchAgent template.
-    inreplace pkgshare/"launchd/com.irondome.sentinel.plist",
-          "<string>+14133550676</string>",
-          "<string></string>"
+    # Stop shipping Buddy (subagent) artifacts.
+    rm_f pkgshare/"launchd/com.irondome.buddy.plist"
+    rm_f pkgshare/"scripts/irondome-buddy-install-launchagent.zsh"
+    rm_f pkgshare/"scripts/irondome-respond.zsh"
+
+        # Normalize the shipped LaunchAgent template to the canonical label + filename.
+        # The upstream source tarball may still ship the legacy name, so patch it first then rename.
+        legacy_label = ["com", "irondome", "sentinel"].join(".")
+        canonical_label = ["com", "tortuga", "scutum", "sentinel"].join(".")
+        legacy_plist = pkgshare/"launchd/#{legacy_label}.plist"
+        canonical_plist = pkgshare/"launchd/#{canonical_label}.plist"
+
+        if legacy_plist.exist?
+      inreplace legacy_plist,
+        "<string>+14133550676</string>",
+        "<string></string>"
+
+      inreplace legacy_plist,
+        "<string>#{legacy_label}</string>",
+        "<string>#{canonical_label}</string>"
+
+      inreplace legacy_plist,
+        "/tmp/#{legacy_label}.out.log",
+        "/tmp/#{canonical_label}.out.log"
+
+      inreplace legacy_plist,
+        "/tmp/#{legacy_label}.err.log",
+        "/tmp/#{canonical_label}.err.log"
+
+      mv legacy_plist, canonical_plist
+        else
+      # Newer tarballs may already ship the canonical plist name.
+      inreplace canonical_plist,
+        "<string>+14133550676</string>",
+        "<string></string>"
+        end
+
+        # Ensure installer scripts reference the canonical plist/label.
+        inreplace pkgshare/"scripts/irondome-sentinel-install-launchagent.zsh",
+              legacy_label,
+              canonical_label
+
+        if (pkgshare/"scripts/irondome-polling-test.zsh").exist?
+      inreplace pkgshare/"scripts/irondome-polling-test.zsh",
+            legacy_label,
+            canonical_label
+        end
 
     # The installer script prints the launchctl service; on first install the service may not exist yet.
     # Avoid exiting non-zero (and emitting an alarming error) in that case.
     inreplace pkgshare/"scripts/irondome-sentinel-install-launchagent.zsh",
               'launchctl print "gui/$uidn/$label" | head -n 80',
               'launchctl print "gui/$uidn/$label" 2>/dev/null | head -n 80 || true'
+
+    # Stop using the AI responder/subagent in the default pipeline.
+    inreplace pkgshare/"scripts/irondome-run.zsh",
+              "# Orchestrator: scan -> detect -> respond",
+              "# Orchestrator: scan -> detect -> playbook"
+
+    inreplace pkgshare/"scripts/irondome-run.zsh",
+              '/bin/zsh "$script_dir/irondome-respond.zsh" "$workdir"',
+              ""
+
+    # Remove Ollama/Buddy references from evidence collection.
+    inreplace pkgshare/"scripts/irondome-scan.zsh",
+              'echo "=== Iron Dome Buddy (evidence report) ==="',
+              'echo "=== Iron Dome Sentinel (evidence report) ==="'
+
+    inreplace pkgshare/"scripts/irondome-scan.zsh",
+              'echo "- actions:  $workdir/actions-latest.txt (generated by irondome-respond.zsh)"',
+              'echo "- actions:  $workdir/actions-latest.txt (optional)"'
+
+    scan_ollama_block = <<~'SH'
+      echo "[ollama] Status"
+      if command -v ollama >/dev/null 2>&1; then
+        ollama ps || true
+      else
+        echo "ollama not found"
+      fi
+      echo
+
+SH
+
+    inreplace pkgshare/"scripts/irondome-scan.zsh", scan_ollama_block, ""
+
+    inreplace pkgshare/"scripts/irondome-detect.zsh",
+              "# Allowlist is conservative: 11434 (ollama), 22 (ssh), 80/443 (web), 5353 (mDNS), 53 (dns), 631 (ipp).",
+              "# Allowlist is conservative: 22 (ssh), 80/443 (web), 5353 (mDNS), 53 (dns), 631 (ipp)."
+
+    inreplace pkgshare/"scripts/irondome-detect.zsh",
+              "allow_ports_re=':(22|53|80|443|631|5353|11434)\\b'",
+              "allow_ports_re=':(22|53|80|443|631|5353)\\b'"
+
+    # Add iMessage command: `remove` (wipes LaunchAgent plist + local IronDome base dir; confirmation required).
+    # Patched in at install-time so we can ship fixes via Homebrew `revision` without retagging the source.
+    python_remove_search = <<~'PY'
+      if normalized == "log":
+        return self._tail_log(60)
+
+      # Power control.
+  PY
+
+    python_remove_replace = <<~'PY'
+      if normalized == "log":
+        return self._tail_log(60)
+
+      if normalized in {"remove", "uninstall", "wipe"}:
+        self._state["remove_pending"] = {
+          "requested_by": _normalize_handle(sender_handle),
+          "expires_epoch": int(time.time()) + 300,
+        }
+        self._save_state()
+        return (
+          "Remove requested. Reply 'remove confirm' within 5 minutes to proceed.\n"
+          "This will: bootout Sentinel LaunchAgent, delete ~/Library/LaunchAgents/com.tortuga.scutum.sentinel.plist,\n"
+          "and delete ~/Library/Application Support/IronDome (config/work/state).\n"
+          "It will NOT uninstall the Homebrew formula.\n"
+        )
+
+      if normalized in {"remove confirm", "uninstall confirm", "wipe confirm"}:
+        pending = self._state.get("remove_pending")
+        if not isinstance(pending, dict):
+          pending = {}
+        try:
+          expires = int(pending.get("expires_epoch") or 0)
+        except Exception:
+          expires = 0
+        req_by = _normalize_handle(str(pending.get("requested_by") or ""))
+        if not expires or not req_by:
+          return "No pending remove. Send 'remove' first."
+        if int(time.time()) > expires:
+          self._state["remove_pending"] = {}
+          self._save_state()
+          return "Remove request expired. Send 'remove' again."
+        if req_by != _normalize_handle(sender_handle):
+          return "Remove request is pending for a different sender."
+
+        # Best effort: stop job + remove local artifacts.
+        self.send_message("[Iron Dome] Removing local Sentinel config + LaunchAgent now. After reinstall, run: irondome-sentinel-setup")
+        self._stop = True
+        uidn = str(os.getuid())
+        plist_path = Path("~/Library/LaunchAgents/com.tortuga.scutum.sentinel.plist").expanduser()
+        try:
+          subprocess.run(["/bin/launchctl", "bootout", f"gui/{uidn}", str(plist_path)], capture_output=True, text=True)
+        except Exception:
+          pass
+        try:
+          plist_path.unlink()
+        except Exception:
+          pass
+        try:
+          shutil.rmtree(self.base_dir)
+        except Exception:
+          pass
+        self._state["remove_pending"] = {}
+        self._save_state()
+        return None
+
+      # Power control.
+  PY
+
+    inreplace pkgshare/"scripts/irondome-sentinel.py", python_remove_search, python_remove_replace
+
+    # Mention `remove` in help output.
+    inreplace pkgshare/"scripts/irondome-sentinel.py",
+          '            "- log",',
+          "            \"- log\",\n            \"- remove (wipes LaunchAgent + local config; confirm required)\"," 
+
+    # Treat `remove` as a command attempt (so it gets an Unknown-command response if misspelled).
+    inreplace pkgshare/"scripts/irondome-sentinel.py",
+          "            \"log\",\n            \"shutdown\",\n",
+          "            \"log\",\n            \"remove\",\n            \"shutdown\",\n"
+
+    # Prevent double-replies: dedupe inbound messages by message_id.
+    python_state_search = <<~'PY'
+          "last_message_id": "",
+          "last_alert_hash": "",
+  PY
+
+    python_state_replace = <<~'PY'
+          "last_message_id": "",
+          "recent_message_ids": [],
+          "last_alert_hash": "",
+  PY
+
+    inreplace pkgshare/"scripts/irondome-sentinel.py", python_state_search, python_state_replace
+
+    python_poll_search = <<~'PY'
+      newest_seen = last_id
+      responses: list[str] = []
+
+      for handle in sorted(self.allowed_handles):
+        msgs = self.poll_messages(handle, limit=25)
+        for m in msgs:
+          if not m.message_id:
+            continue
+  PY
+
+    python_poll_replace = <<~'PY'
+      newest_seen = last_id
+      responses: list[str] = []
+
+      recent = self._state.get("recent_message_ids")
+      if not isinstance(recent, list):
+        recent = []
+      recent_set = {str(x) for x in recent if str(x)}
+      processed_this_cycle: set[str] = set()
+
+      for handle in sorted(self.allowed_handles):
+        msgs = self.poll_messages(handle, limit=25)
+        for m in msgs:
+          mid = (m.message_id or "").strip()
+          if not mid:
+            continue
+
+          if mid in processed_this_cycle or mid in recent_set:
+            continue
+  PY
+
+    inreplace pkgshare/"scripts/irondome-sentinel.py", python_poll_search, python_poll_replace
+
+    python_poll_search2 = <<~'PY'
+          if last_id and self._compare_message_ids(m.message_id, last_id) <= 0:
+            continue
+  PY
+
+    python_poll_replace2 = <<~'PY'
+          if last_id and self._compare_message_ids(mid, last_id) <= 0:
+            continue
+  PY
+
+    inreplace pkgshare/"scripts/irondome-sentinel.py", python_poll_search2, python_poll_replace2
+
+    python_poll_search3 = <<~'PY'
+            if consumed:
+              if self._compare_message_ids(m.message_id, newest_seen) > 0:
+                newest_seen = m.message_id
+              continue
+  PY
+
+    python_poll_replace3 = <<~'PY'
+            if consumed:
+              processed_this_cycle.add(mid)
+              if self._compare_message_ids(mid, newest_seen) > 0:
+                newest_seen = mid
+              continue
+  PY
+
+    inreplace pkgshare/"scripts/irondome-sentinel.py", python_poll_search3, python_poll_replace3
+
+    python_poll_search4 = <<~'PY'
+          if self._compare_message_ids(m.message_id, newest_seen) > 0:
+            newest_seen = m.message_id
+
+      if newest_seen and newest_seen != last_id:
+        self._state["last_message_id"] = newest_seen
+        self._save_state()
+  PY
+
+    python_poll_replace4 = <<~'PY'
+          processed_this_cycle.add(mid)
+          recent.append(mid)
+          if self._compare_message_ids(mid, newest_seen) > 0:
+            newest_seen = mid
+
+      recent = [str(x) for x in recent if str(x)]
+      if len(recent) > 200:
+        recent = recent[-200:]
+      self._state["recent_message_ids"] = recent
+
+      if newest_seen and newest_seen != last_id:
+        self._state["last_message_id"] = newest_seen
+      if processed_this_cycle or (newest_seen and newest_seen != last_id):
+        self._save_state()
+  PY
+
+    inreplace pkgshare/"scripts/irondome-sentinel.py", python_poll_search4, python_poll_replace4
   end
 
   def caveats
@@ -222,10 +489,6 @@ class IrondomeSentinel < Formula
       Manual LaunchAgent install:
 
            zsh "#{opt_pkgshare}/scripts/irondome-sentinel-install-launchagent.zsh"
-
-      Optional Buddy (pipeline loop without iMessage):
-
-           zsh "#{opt_pkgshare}/scripts/irondome-buddy-install-launchagent.zsh"
 
       Config:
         ~/Library/Application Support/IronDome/config.json
