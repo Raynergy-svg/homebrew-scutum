@@ -4,9 +4,10 @@ class IrondomeSentinel < Formula
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
   license "MIT"
-  revision 12
+  revision 13
 
   depends_on "python"
+  depends_on "ollama"
 
   def install
     libexec.install Dir["*"]
@@ -21,161 +22,345 @@ class IrondomeSentinel < Formula
 
     chmod 0755, bin/"irondome-sentinel"
 
-    setup = <<~'EOS'
+    (pkgshare/"scripts/irondome-sentinel-setup.py").write <<~'PY'
+      #!/usr/bin/env python3
+      import argparse
+      import json
+      import os
+      import re
+      import secrets
+      import subprocess
+      import sys
+      from pathlib import Path
+
+
+      def _print(s: str = "") -> None:
+        sys.stdout.write(s + "\n")
+        sys.stdout.flush()
+
+
+      def _run(cmd: list[str], *, check: bool = True, quiet: bool = False) -> subprocess.CompletedProcess:
+        stdout = subprocess.DEVNULL if quiet else None
+        stderr = subprocess.DEVNULL if quiet else None
+        return subprocess.run(cmd, check=check, stdout=stdout, stderr=stderr, text=True)
+
+
+      def _plistbuddy_exists(plist: Path, key_path: str) -> bool:
+        result = subprocess.run(
+          ["/usr/libexec/PlistBuddy", "-c", f"Print {key_path}", str(plist)],
+          stdout=subprocess.DEVNULL,
+          stderr=subprocess.DEVNULL,
+          text=True,
+        )
+        return result.returncode == 0
+
+
+      def _plistbuddy_get(plist: Path, key_path: str) -> str:
+        result = subprocess.run(
+          ["/usr/libexec/PlistBuddy", "-c", f"Print {key_path}", str(plist)],
+          stdout=subprocess.PIPE,
+          stderr=subprocess.DEVNULL,
+          text=True,
+        )
+        if result.returncode != 0:
+          return ""
+        return (result.stdout or "").strip()
+
+
+      def _pb_quote(value: str) -> str:
+        return json.dumps(value)
+
+
+      def _plistbuddy_ensure_dict(plist: Path, key_path: str) -> None:
+        if _plistbuddy_exists(plist, key_path):
+          return
+        _run(["/usr/libexec/PlistBuddy", "-c", f"Add {key_path} dict", str(plist)], quiet=True)
+
+
+      def _plistbuddy_set_string(plist: Path, key_path: str, value: str) -> None:
+        q = _pb_quote(value)
+        if _plistbuddy_exists(plist, key_path):
+          _run(["/usr/libexec/PlistBuddy", "-c", f"Set {key_path} {q}", str(plist)], quiet=True)
+        else:
+          _run(["/usr/libexec/PlistBuddy", "-c", f"Add {key_path} string {q}", str(plist)], quiet=True)
+
+
+      def _prompt(label: str, default: str | None = None, *, required: bool = False) -> str:
+        while True:
+          suffix = f" [{default}]" if default else ""
+          value = input(f"{label}{suffix}: ").strip()
+          if not value and default:
+            value = default
+          if required and not value:
+            _print("Please enter a value.")
+            continue
+          return value
+
+
+      def _prompt_yes_no(label: str, default: bool = False) -> bool:
+        d = "Y/n" if default else "y/N"
+        while True:
+          raw = input(f"{label} [{d}]: ").strip().lower()
+          if not raw:
+            return default
+          if raw in {"y", "yes"}:
+            return True
+          if raw in {"n", "no"}:
+            return False
+          _print("Please answer y or n.")
+
+
+      def _prompt_int(label: str, default: int) -> int:
+        while True:
+          raw = _prompt(label, str(default), required=True)
+          raw = re.sub(r"\s+", "", raw)
+          if raw.isdigit() and int(raw) > 0:
+            return int(raw)
+          _print("Please enter a positive integer.")
+
+
+      def _normalize_handle(value: str) -> str:
+        value = value.strip()
+        if not value:
+          return value
+        if "@" in value:
+          return value.lower()
+        if value.startswith("+"):
+          digits = re.sub(r"\D", "", value)
+          return f"+{digits}" if digits else value
+        digits = re.sub(r"\D", "", value)
+        if len(digits) == 10:
+          return f"+1{digits}"
+        if len(digits) == 11 and digits.startswith("1"):
+          return f"+1{digits[1:]}"
+        return value
+
+
+      def _choose_backend(default: str) -> str:
+        options = {"auto", "chatdb", "osascript", "applescript"}
+        while True:
+          raw = _prompt("Polling backend (auto/chatdb/osascript)", default)
+          raw = raw.strip().lower()
+          if raw == "applescript":
+            raw = "osascript"
+          if raw in options:
+            return raw
+          _print("Please enter: auto, chatdb, or osascript.")
+
+
+      def _write_reference_env(path: Path, env: dict[str, str]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = ["# Reference-only (LaunchAgent plist is source of truth)"]
+        for k in sorted(env.keys()):
+          v = env[k]
+          lines.append(f"{k}={v}")
+        data = "\n".join(lines) + "\n"
+        path.write_text(data, encoding="utf-8")
+        os.chmod(path, 0o600)
+
+
+      def main() -> int:
+        parser = argparse.ArgumentParser(
+          prog="irondome-sentinel-setup",
+          description="Interactive post-install setup for IronDome Sentinel (LaunchAgent config).",
+          add_help=True,
+        )
+        parser.add_argument(
+          "--no-launchctl",
+          action="store_true",
+          help="Do not start/stop the LaunchAgent (only write files).",
+        )
+        args = parser.parse_args()
+
+        pkgshare = Path(__file__).resolve().parents[1]
+        install_helper = pkgshare / "scripts" / "irondome-sentinel-install-launchagent.zsh"
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.irondome.sentinel.plist"
+        reference_env = Path.home() / ".irondome" / "sentinel.env"
+        config_dir = Path.home() / "Library" / "Application Support" / "IronDome"
+        config_path = config_dir / "config.json"
+
+        _print("\033[1mIronDome Sentinel Setup\033[0m")
+        _print("Configure your LaunchAgent + command authorization.")
+        _print("")
+
+        _print("\033[1mStep 1/4 — Identity\033[0m")
+        from_email = _normalize_handle(_prompt("iMessage email (used to send commands)", required=True))
+        from_phone = _normalize_handle(_prompt("Phone number (optional)", default=""))
+        default_to = from_phone or from_email
+        sentinel_to = _normalize_handle(_prompt("Send alerts/replies TO", default_to, required=True))
+
+        allowed = []
+        for h in [from_email, from_phone, sentinel_to]:
+          if h and h not in allowed:
+            allowed.append(h)
+
+        _print("")
+        _print("\033[1mStep 2/4 — Shared secret\033[0m")
+        use_secret = _prompt_yes_no("Require a shared secret prefix for commands?", default=False)
+        shared_secret = ""
+        if use_secret:
+          shared_secret = secrets.token_urlsafe(16)
+          _print("\033[33m⚠ IMPORTANT\033[0m  This secret is shown once. Save it.")
+          _print("\033[1m" + shared_secret + "\033[0m")
+          input("Press Enter to continue…")
+
+        _print("")
+        _print("\033[1mStep 3/4 — Polling & Interval\033[0m")
+        existing_backend = _plistbuddy_get(plist, ":EnvironmentVariables:SENTINEL_POLL_BACKEND") or "auto"
+        backend = _choose_backend(existing_backend)
+        existing_poll_seconds_raw = _plistbuddy_get(plist, ":EnvironmentVariables:SENTINEL_POLL_SECONDS")
+        try:
+          existing_poll_seconds = int(existing_poll_seconds_raw) if existing_poll_seconds_raw else 5
+        except Exception:
+          existing_poll_seconds = 5
+        poll_seconds = _prompt_int("Poll interval seconds", existing_poll_seconds)
+
+        existing_interval_raw = _plistbuddy_get(plist, ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS")
+        try:
+          existing_interval_seconds = int(existing_interval_raw) if existing_interval_raw else 60
+        except Exception:
+          existing_interval_seconds = 60
+        interval_seconds = _prompt_int("Scan interval seconds (IRONDOME_INTERVAL_SECONDS)", existing_interval_seconds)
+
+        _print("")
+        _print("\033[1mStep 4/4 — Apply\033[0m")
+
+        if not install_helper.exists():
+          _print(f"ERROR: missing install helper: {install_helper}")
+          return 1
+
+        _run(["/bin/zsh", str(install_helper)], quiet=True)
+        if not plist.exists():
+          _print(f"ERROR: expected LaunchAgent plist at: {plist}")
+          return 1
+
+        _plistbuddy_ensure_dict(plist, ":EnvironmentVariables")
+
+        _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_TO", sentinel_to)
+        _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_ALLOWED_HANDLES", ",".join(allowed))
+        _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_POLL_BACKEND", backend)
+        _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_POLL_SECONDS", str(poll_seconds))
+        _plistbuddy_set_string(plist, ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS", str(interval_seconds))
+        if use_secret:
+          _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_SHARED_SECRET", shared_secret)
+        else:
+          if _plistbuddy_exists(plist, ":EnvironmentVariables:SENTINEL_SHARED_SECRET"):
+            subprocess.run(
+              ["/usr/libexec/PlistBuddy", "-c", "Delete :EnvironmentVariables:SENTINEL_SHARED_SECRET", str(plist)],
+              stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL,
+              text=True,
+            )
+
+        _run(["/usr/bin/plutil", "-lint", str(plist)], quiet=True)
+
+        existing_router_model = ""
+        if config_path.exists():
+          try:
+            obj = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(obj, dict):
+              existing_router_model = str(obj.get("router_model", "") or "").strip()
+          except Exception:
+            existing_router_model = ""
+        if not existing_router_model:
+          existing_router_model = "spectrum"
+        router_model = _prompt("router_model (writes config.json)", existing_router_model, required=True).strip() or "spectrum"
+
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_obj: dict[str, object] = {}
+        if config_path.exists():
+          try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+              config_obj.update(existing)
+          except Exception:
+            pass
+        config_obj["router_model"] = router_model
+        config_path.write_text(json.dumps(config_obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        env_ref = {
+          "SENTINEL_TO": sentinel_to,
+          "SENTINEL_ALLOWED_HANDLES": ",".join(allowed),
+          "SENTINEL_POLL_BACKEND": backend,
+          "SENTINEL_POLL_SECONDS": str(poll_seconds),
+          "IRONDOME_INTERVAL_SECONDS": str(interval_seconds),
+          "ROUTER_MODEL": router_model,
+        }
+        if use_secret:
+          env_ref["SENTINEL_SHARED_SECRET"] = shared_secret
+        _write_reference_env(reference_env, env_ref)
+
+        uid = str(os.getuid())
+        label = "com.irondome.sentinel"
+        gui = f"gui/{uid}"
+        if not args.no_launchctl:
+          subprocess.run(["/bin/launchctl", "bootout", gui, str(plist)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          subprocess.run(["/bin/launchctl", "bootstrap", gui, str(plist)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          subprocess.run(["/bin/launchctl", "enable", f"{gui}/{label}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          subprocess.run(["/bin/launchctl", "kickstart", "-k", f"{gui}/{label}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        base_dir = _plistbuddy_get(plist, ":EnvironmentVariables:IRONDOME_BASE_DIR") or str(Path.home() / ".irondome")
+        workdir = _plistbuddy_get(plist, ":EnvironmentVariables:IRONDOME_WORKDIR") or str(Path(base_dir) / "work" / "sentinel")
+        sentinel_log = str(Path(workdir) / "sentinel.log")
+
+        _print("")
+        _print("\033[1m✅ Setup complete\033[0m")
+        _print("")
+        _print("Files:")
+        _print(f"  LaunchAgent: {plist}")
+        _print(f"  Reference env: {reference_env} (reference-only)")
+        _print("")
+        _print("Configuration:")
+        _print(f"  Sent to: {sentinel_to}")
+        _print("  Authorized: " + ", ".join(allowed))
+        _print(f"  Poll backend: {backend}")
+        _print(f"  Poll seconds: {poll_seconds}")
+        _print(f"  Scan interval: {interval_seconds}")
+        _print(f"  router_model: {router_model}")
+        _print(f"  config.json: {config_path}")
+        _print(f"  Shared secret: {'enabled' if use_secret else 'disabled'}")
+        _print("")
+        _print("Required actions:")
+        _print("  1) System Settings → Privacy & Security → Full Disk Access")
+        _print(f"     Add: {sys.executable}")
+        for p in ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", str(Path.home() / ".continue" / ".venv" / "bin" / "python")]:
+          if os.path.exists(p) and p != sys.executable:
+            _print(f"     Also add (if used): {p}")
+        _print("  2) System Settings → Privacy & Security → Automation")
+        _print("     Allow your Python to control Messages")
+        _print("")
+        _print("Manage the agent:")
+        _print(f"  launchctl print {gui}/{label}")
+        _print(f"  launchctl kickstart -k {gui}/{label}")
+        _print(f"  launchctl bootout {gui} {plist}")
+        _print(f"  launchctl bootstrap {gui} {plist}")
+        _print("")
+        _print("View logs:")
+        _print(f"  tail -n 200 -f {sentinel_log}")
+        _print("")
+        _print("Test commands:")
+        if use_secret:
+          _print(f"  {shared_secret} status")
+          _print(f"  {shared_secret} ping")
+        else:
+          _print("  status")
+          _print("  ping")
+        _print("")
+        _print("Note: Sentinel replies are always sent to SENTINEL_TO.")
+        return 0
+
+
+      if __name__ == "__main__":
+        raise SystemExit(main())
+    PY
+
+    chmod 0755, pkgshare/"scripts/irondome-sentinel-setup.py"
+
+    (bin/"irondome-sentinel-setup").write <<~EOS
       #!/bin/bash
       set -euo pipefail
-
-      PKGSHARE="__PKGSHARE__"
-      PYTHON3="__PYTHON3__"
-
-        usage() {
-          /usr/bin/printf '%s\n' "irondome-sentinel-setup"
-          /usr/bin/printf '%s\n' ""
-          /usr/bin/printf '%s\n' "Interactive post-install setup:"
-          /usr/bin/printf '%s\n' "- Prompts for SENTINEL_TO, SENTINEL_ALLOWED_HANDLES, IRONDOME_INTERVAL_SECONDS"
-          /usr/bin/printf '%s\n' "- Updates ~/Library/LaunchAgents/com.irondome.sentinel.plist EnvironmentVariables"
-          /usr/bin/printf '%s\n' "- Updates ~/Library/Application Support/IronDome/config.json (router_model)"
-          /usr/bin/printf '%s\n' "- Reloads the LaunchAgent"
-          /usr/bin/printf '%s\n' ""
-          /usr/bin/printf '%s\n' "Usage:"
-          /usr/bin/printf '%s\n' "  irondome-sentinel-setup"
-          /usr/bin/printf '%s\n' "  irondome-sentinel-setup --help"
-        }
-
-      if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-        usage
-        exit 0
-      fi
-
-      pb_quote() {
-        "$PYTHON3" -c "import json,sys; print(json.dumps(sys.argv[1]))" "${1-}"
-      }
-
-      pb_exists() {
-        /usr/libexec/PlistBuddy -c "Print $2" "$1" >/dev/null 2>&1
-      }
-
-      pb_get() {
-        /usr/libexec/PlistBuddy -c "Print $2" "$1" 2>/dev/null | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
-      }
-
-      pb_ensure_dict() {
-        if ! pb_exists "$1" "$2"; then
-          /usr/libexec/PlistBuddy -c "Add $2 dict" "$1" >/dev/null
-        fi
-      }
-
-      pb_set_string() {
-        local plist="$1" path="$2" value="${3-}"
-        local q
-        q="$(pb_quote "$value")"
-        if pb_exists "$plist" "$path"; then
-          /usr/libexec/PlistBuddy -c "Set $path $q" "$plist" >/dev/null
-        else
-          /usr/libexec/PlistBuddy -c "Add $path string $q" "$plist" >/dev/null
-        fi
-      }
-
-      prompt_default() {
-        local label="$1" default="${2-}" input=""
-        if [[ -n "$default" ]]; then
-          IFS= read -r -p "$label [$default]: " input || true
-          input="${input:-$default}"
-        else
-          IFS= read -r -p "$label: " input || true
-        fi
-        printf '%s' "$input"
-      }
-
-      prompt_int_default() {
-        local label="$1" default="$2" input=""
-        while true; do
-          input="$(prompt_default "$label" "$default")"
-          input="$(printf '%s' "$input" | /usr/bin/tr -d '[:space:]')"
-          if [[ "$input" =~ ^[0-9]+$ ]] && (( input > 0 )); then
-            printf '%s' "$input"
-            return 0
-          fi
-          /usr/bin/printf '%s\n' "Please enter a positive integer." >&2
-        done
-      }
-
-      /usr/bin/printf '%s\n' "== IronDome Sentinel setup =="
-      /usr/bin/printf '%s\n' "(This will install/reload the LaunchAgent, then prompt for your preferences.)"
-      /usr/bin/printf '\n'
-
-        /bin/zsh "$PKGSHARE/scripts/irondome-sentinel-install-launchagent.zsh" >/dev/null
-
-        plist="$HOME/Library/LaunchAgents/com.irondome.sentinel.plist"
-        if [[ ! -f "$plist" ]]; then
-          /usr/bin/printf '%s\n' "ERROR: expected LaunchAgent plist at: $plist" >&2
-          exit 1
-        fi
-
-        existing_to="$(pb_get "$plist" ":EnvironmentVariables:SENTINEL_TO" || true)"
-        existing_allowed="$(pb_get "$plist" ":EnvironmentVariables:SENTINEL_ALLOWED_HANDLES" || true)"
-        existing_interval="$(pb_get "$plist" ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS" || true)"
-        existing_interval="${existing_interval:-60}"
-
-        config_dir="$HOME/Library/Application Support/IronDome"
-        config_path="$config_dir/config.json"
-        existing_router_model="$("$PYTHON3" -c 'import sys; exec("import json,os\np=sys.argv[1]\ntry:\n  with open(p, \\\"r\\\", encoding=\\\"utf-8\\\") as f: obj=json.load(f)\nexcept Exception: obj={}\nv=obj.get(\\\"router_model\\\", \\\"\\\") if isinstance(obj, dict) else \\\"\\\"\nprint(v.strip() if isinstance(v, str) else \\\"\\\")\n")' "$config_path" 2>/dev/null || true)"
-        existing_router_model="${existing_router_model:-spectrum}"
-
-      sentinel_to="$(prompt_default "SENTINEL_TO (phone or Apple ID email)" "$existing_to")"
-      sentinel_to="$(printf '%s' "$sentinel_to" | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-
-      default_allowed="$existing_allowed"
-      if [[ -z "$default_allowed" ]]; then
-        default_allowed="$sentinel_to"
-      fi
-      sentinel_allowed="$(prompt_default "SENTINEL_ALLOWED_HANDLES (comma-separated)" "$default_allowed")"
-      sentinel_allowed="$(printf '%s' "$sentinel_allowed" | /usr/bin/tr -d '[:space:]')"
-
-      interval_seconds="$(prompt_int_default "IRONDOME_INTERVAL_SECONDS" "$existing_interval")"
-      router_model="$(prompt_default "router_model (writes config.json)" "$existing_router_model")"
-      router_model="$(printf '%s' "$router_model" | /usr/bin/sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-      router_model="${router_model:-spectrum}"
-
-      pb_ensure_dict "$plist" ":EnvironmentVariables"
-      pb_set_string "$plist" ":EnvironmentVariables:SENTINEL_TO" "$sentinel_to"
-      pb_set_string "$plist" ":EnvironmentVariables:SENTINEL_ALLOWED_HANDLES" "$sentinel_allowed"
-      pb_set_string "$plist" ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS" "$interval_seconds"
-      /usr/bin/plutil -lint "$plist" >/dev/null
-
-        /bin/mkdir -p "$config_dir"
-        if [[ ! -f "$config_path" ]]; then
-          /usr/bin/printf '%s\n' '{}' >"$config_path"
-        fi
-        /usr/bin/plutil -replace router_model -string "$router_model" "$config_path"
-
-        uidn="$(/usr/bin/id -u)"
-        label="com.irondome.sentinel"
-        gui_target="gui/$uidn"
-
-      /bin/launchctl bootout "$gui_target" "$plist" >/dev/null 2>&1 || true
-      /bin/launchctl bootstrap "$gui_target" "$plist" >/dev/null 2>&1 || true
-      /bin/launchctl enable "$gui_target/$label" >/dev/null 2>&1 || true
-      /bin/launchctl kickstart -k "$gui_target/$label" >/dev/null 2>&1 || true
-
-      /usr/bin/printf '\n'
-      /usr/bin/printf '%s\n' "Configured Sentinel:"
-      /usr/bin/printf '%s\n' "  LaunchAgent: $plist"
-      /usr/bin/printf '%s\n' "  SENTINEL_TO: $sentinel_to"
-      /usr/bin/printf '%s\n' "  ALLOWED: $sentinel_allowed"
-      /usr/bin/printf '%s\n' "  INTERVAL: $interval_seconds"
-      /usr/bin/printf '%s\n' "  router_model: $router_model"
-      /usr/bin/printf '%s\n' "  config.json: $config_path"
-      /usr/bin/printf '\n'
-      /usr/bin/printf '%s\n' "macOS permissions (System Settings → Privacy & Security):"
-      /usr/bin/printf '%s\n' "  - Full Disk Access: $PYTHON3"
-      /usr/bin/printf '%s\n' "  - Automation: allow Messages access for $PYTHON3"
+      exec "#{python3}" "#{opt_pkgshare}/scripts/irondome-sentinel-setup.py" "$@"
     EOS
-
-    (bin/"irondome-sentinel-setup").write(
-      setup.gsub("__PKGSHARE__", opt_pkgshare.to_s)
-           .gsub("__PYTHON3__", python3.to_s),
-    )
 
     chmod 0755, bin/"irondome-sentinel-setup"
 
@@ -192,12 +377,30 @@ class IrondomeSentinel < Formula
     <<~EOS
       Irondome-Sentinel installs scripts and LaunchAgent templates.
 
+      Ollama:
+        - Ollama is installed as a dependency. Start it once:
+
+            brew services start ollama
+
+        - (Optional) pull a model:
+
+            ollama pull llama3.2:3b
+
       Next steps:
         1) Run interactive setup:
 
-           irondome-sentinel-setup
+          irondome-sentinel-setup
 
-        2) Configure Messages permissions (Automation) and Full Disk Access for the Python used by Homebrew.
+        2) Configure Messages permissions (Automation) and Full Disk Access for the Python that runs Sentinel.
+
+      Remote commands (Messages):
+        - Only handles in the allowlist can send commands (setup auto-populates this).
+        - If a shared secret is enabled, every command must start with:
+
+            <secret> <command>
+
+        - Replies are always sent to SENTINEL_TO (not necessarily back to the sender thread).
+        - Some commands are multi-step and require a follow-up confirmation message (e.g. ACCEPT/DENY).
 
       Manual LaunchAgent install:
 
