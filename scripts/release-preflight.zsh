@@ -15,6 +15,21 @@ fi
 
 repo_root="$(cd "$(dirname "$formula_path")/.." && pwd)"
 
+# Optional workspace-level drift check: if this repo is checked out inside the
+# larger .continue workspace (with additional formula copies), keep them
+# byte-for-byte identical to avoid confusion.
+workspace_root="$(cd "$repo_root/.." && pwd)"
+canonical_formula="$formula_path"
+for other_formula in \
+  "$workspace_root/Formula/irondome-sentinel.rb" \
+  "$workspace_root/homebrew-scutum/Formula/irondome-sentinel.rb"; do
+  if [[ -f "$other_formula" ]] && ! /usr/bin/cmp -s "$canonical_formula" "$other_formula"; then
+    print -u2 -- "ERROR: formula drift detected: $other_formula differs from $canonical_formula"
+    print -u2 -- "Fix: cp -f \"$canonical_formula\" \"$other_formula\""
+    exit 2
+  fi
+done
+
 url="$(ruby -e 'p=ARGV[0]; s=File.read(p); m=s.match(/\burl\s+"([^"]+)"/); abort("no url") unless m; puts m[1]' "$formula_path")"
 
 work="$(mktemp -d)"
