@@ -23,18 +23,24 @@ class IrondomeSentinel < Formula
     end
 
     if (libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh").exist?
-      inreplace (libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh"), old_plist_name, new_plist_name
-      inreplace (libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh"), old_label, new_label
+      p = libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh"
+      s = p.read
+      inreplace p, old_plist_name, new_plist_name if s.include?(old_plist_name)
+      inreplace p, old_label, new_label if s.include?(old_label)
     end
 
     if (libexec/"scripts"/"irondome-polling-test.zsh").exist?
-      inreplace (libexec/"scripts"/"irondome-polling-test.zsh"), old_plist_name, new_plist_name
-      inreplace (libexec/"scripts"/"irondome-polling-test.zsh"), old_label, new_label
+      p = libexec/"scripts"/"irondome-polling-test.zsh"
+      s = p.read
+      inreplace p, old_plist_name, new_plist_name if s.include?(old_plist_name)
+      inreplace p, old_label, new_label if s.include?(old_label)
     end
 
     if (libexec/"irondome-SENTINEL.md").exist?
-      inreplace (libexec/"irondome-SENTINEL.md"), old_plist_name, new_plist_name
-      inreplace (libexec/"irondome-SENTINEL.md"), old_label, new_label
+      p = libexec/"irondome-SENTINEL.md"
+      s = p.read
+      inreplace p, old_plist_name, new_plist_name if s.include?(old_plist_name)
+      inreplace p, old_label, new_label if s.include?(old_label)
     end
 
     python3 = Formula["python"].opt_bin/"python3"
