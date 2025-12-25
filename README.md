@@ -8,13 +8,7 @@ Homebrew tap for Scutum.
 brew tap Raynergy-svg/scutum
 brew install irondome-sentinel
 
-# If you plan to use router_model=ollama, start the daemon
-brew services start ollama
-
-# Optional (recommended): create the local model used by Sentinel
-ollama create sentinel -f ~/.continue/ollama-models/sentinel/Modelfile
-
-# Recommended onboarding
+# Recommended onboarding (starts Ollama + creates the 'sentinel' model automatically)
 irondome-sentinel-setup
 ```
 

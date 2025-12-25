@@ -4,7 +4,7 @@ class IrondomeSentinel < Formula
   url "https://github.com/Raynergy-svg/Scutum/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "7a136c28ebd8ee40f5015b17c23483e3d69a3a7cfc72de727edd39119be5be3d"
   license "MIT"
-  revision 13
+  revision 15
 
   depends_on "python"
   depends_on "ollama"
@@ -24,23 +24,28 @@ class IrondomeSentinel < Formula
 
     if (libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh").exist?
       p = libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh"
-      s = p.read
-      inreplace p, old_plist_name, new_plist_name if s.include?(old_plist_name)
-      inreplace p, old_label, new_label if s.include?(old_label)
+      inreplace p, old_label, new_label if p.read.include?(old_label)
+      inreplace p, old_plist_name, new_plist_name if p.read.include?(old_plist_name)
     end
 
     if (libexec/"scripts"/"irondome-polling-test.zsh").exist?
       p = libexec/"scripts"/"irondome-polling-test.zsh"
-      s = p.read
-      inreplace p, old_plist_name, new_plist_name if s.include?(old_plist_name)
-      inreplace p, old_label, new_label if s.include?(old_label)
+      inreplace p, old_label, new_label if p.read.include?(old_label)
+      inreplace p, old_plist_name, new_plist_name if p.read.include?(old_plist_name)
+    end
+
+    # Ensure AI decision JSON is written without echo escape interpretation (zsh `echo` may expand \n etc).
+    if (libexec/"scripts"/"irondome-respond.zsh").exist?
+      p = libexec/"scripts"/"irondome-respond.zsh"
+      needle = 'echo "$ai_decision" > "$ai_json"'
+      replacement = 'print -r -- "$ai_decision" > "$ai_json"'
+      inreplace p, needle, replacement if p.read.include?(needle)
     end
 
     if (libexec/"irondome-SENTINEL.md").exist?
       p = libexec/"irondome-SENTINEL.md"
-      s = p.read
-      inreplace p, old_plist_name, new_plist_name if s.include?(old_plist_name)
-      inreplace p, old_label, new_label if s.include?(old_label)
+      inreplace p, old_label, new_label if p.read.include?(old_label)
+      inreplace p, old_plist_name, new_plist_name if p.read.include?(old_plist_name)
     end
 
     python3 = Formula["python"].opt_bin/"python3"
@@ -342,22 +347,14 @@ class IrondomeSentinel < Formula
           if not (args.from_email or "").strip():
             _print("ERROR: --yes requires --from-email")
             return 2
-          if not (args.to or "").strip():
-            _print("ERROR: --yes requires --to")
-            return 2
 
         from_email = _normalize_handle((args.from_email or "").strip())
         if not from_email:
           from_email = _normalize_handle(_prompt("iMessage email (used to send commands)", required=True))
 
         from_phone = _normalize_handle((args.from_phone or "").strip())
-        if not args.yes and not args.from_phone:
-          from_phone = _normalize_handle(_prompt("Phone number (optional)", default=""))
 
-        default_to = from_phone or from_email
-        sentinel_to = _normalize_handle((args.to or "").strip())
-        if not sentinel_to:
-          sentinel_to = _normalize_handle(_prompt("Send alerts/replies TO", default_to, required=True))
+        sentinel_to = _normalize_handle((args.to or "").strip()) or from_email
 
         allowed = []
         for h in [from_email, from_phone, sentinel_to]:
@@ -368,8 +365,6 @@ class IrondomeSentinel < Formula
         _print("\033[1mStep 2/4 — Shared secret\033[0m")
         shared_secret = (args.shared_secret or "").strip()
         use_secret = bool(shared_secret) or bool(args.require_secret)
-        if not args.yes and not use_secret and not args.require_secret and not args.shared_secret:
-          use_secret = _prompt_yes_no("Require a shared secret prefix for commands?", default=False)
 
         if use_secret and not shared_secret:
           shared_secret = secrets.token_urlsafe(16)
@@ -377,41 +372,27 @@ class IrondomeSentinel < Formula
         if use_secret:
           _print("\033[33m⚠ IMPORTANT\033[0m  This secret is shown once. Save it.")
           _print("\033[1m" + shared_secret + "\033[0m")
-          if not args.yes:
-            input("Press Enter to continue…")
 
         _print("")
         _print("\033[1mStep 3/4 — Polling & Interval\033[0m")
-        existing_backend = _plistbuddy_get(plist, ":EnvironmentVariables:SENTINEL_POLL_BACKEND") or "auto"
         backend = (args.poll_backend or "").strip().lower()
         if backend == "applescript":
           backend = "osascript"
-        if backend:
-          if backend not in {"auto", "chatdb", "osascript"}:
-            _print("ERROR: --poll-backend must be: auto, chatdb, osascript")
-            return 2
-        else:
-          backend = existing_backend if args.yes else _choose_backend(existing_backend)
+        if not backend:
+          backend = "auto"
+        if backend not in {"auto", "chatdb", "osascript"}:
+          _print("ERROR: --poll-backend must be: auto, chatdb, osascript")
+          return 2
 
-        existing_poll_seconds_raw = _plistbuddy_get(plist, ":EnvironmentVariables:SENTINEL_POLL_SECONDS")
-        try:
-          existing_poll_seconds = int(existing_poll_seconds_raw) if existing_poll_seconds_raw else 5
-        except Exception:
-          existing_poll_seconds = 5
         if args.poll_seconds and args.poll_seconds > 0:
           poll_seconds = args.poll_seconds
         else:
-          poll_seconds = existing_poll_seconds if args.yes else _prompt_int("Poll interval seconds", existing_poll_seconds)
+          poll_seconds = 5
 
-        existing_interval_raw = _plistbuddy_get(plist, ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS")
-        try:
-          existing_interval_seconds = int(existing_interval_raw) if existing_interval_raw else 60
-        except Exception:
-          existing_interval_seconds = 60
         if args.scan_interval_seconds and args.scan_interval_seconds > 0:
           interval_seconds = args.scan_interval_seconds
         else:
-          interval_seconds = existing_interval_seconds if args.yes else _prompt_int("Scan interval seconds (IRONDOME_INTERVAL_SECONDS)", existing_interval_seconds)
+          interval_seconds = 60
 
         _print("")
         _print("\033[1mStep 4/4 — Apply\033[0m")
@@ -447,19 +428,9 @@ class IrondomeSentinel < Formula
 
         _run(["/usr/bin/plutil", "-lint", str(plist)], quiet=True)
 
-        existing_router_model = ""
-        if config_path.exists():
-          try:
-            obj = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(obj, dict):
-              existing_router_model = str(obj.get("router_model", "") or "").strip()
-          except Exception:
-            existing_router_model = ""
-        if not existing_router_model:
-          existing_router_model = "spectrum"
         router_model = (args.router_model or "").strip()
         if not router_model:
-          router_model = (existing_router_model if args.yes else _prompt("router_model (writes config.json)", existing_router_model, required=True).strip()) or "spectrum"
+          router_model = "ollama"
 
         config_dir.mkdir(parents=True, exist_ok=True)
         config_obj: dict[str, object] = {}
@@ -566,7 +537,7 @@ class IrondomeSentinel < Formula
 
     # Ship templates/scripts for local setup.
     pkgshare.install libexec/"launchd"
-    pkgshare.install libexec/"scripts"
+    (pkgshare/"scripts").install Dir["#{libexec}/scripts/*"]
     pkgshare.install libexec/"docker-compose.yaml" if (libexec/"docker-compose.yaml").exist?
 
     (pkgshare/"ollama-models"/"sentinel").mkpath
