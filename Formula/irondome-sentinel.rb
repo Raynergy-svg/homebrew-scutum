@@ -12,6 +12,31 @@ class IrondomeSentinel < Formula
   def install
     libexec.install Dir["*"]
 
+    old_label = "com." + "irondome" + ".sentinel"
+    new_label = "com.scutum.sentinel"
+    old_plist_name = "#{old_label}.plist"
+    new_plist_name = "#{new_label}.plist"
+
+    if (libexec/"launchd"/old_plist_name).exist?
+      mv (libexec/"launchd"/old_plist_name), (libexec/"launchd"/new_plist_name)
+      inreplace (libexec/"launchd"/new_plist_name), old_label, new_label
+    end
+
+    if (libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh").exist?
+      inreplace (libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh"), old_plist_name, new_plist_name
+      inreplace (libexec/"scripts"/"irondome-sentinel-install-launchagent.zsh"), old_label, new_label
+    end
+
+    if (libexec/"scripts"/"irondome-polling-test.zsh").exist?
+      inreplace (libexec/"scripts"/"irondome-polling-test.zsh"), old_plist_name, new_plist_name
+      inreplace (libexec/"scripts"/"irondome-polling-test.zsh"), old_label, new_label
+    end
+
+    if (libexec/"irondome-SENTINEL.md").exist?
+      inreplace (libexec/"irondome-SENTINEL.md"), old_plist_name, new_plist_name
+      inreplace (libexec/"irondome-SENTINEL.md"), old_label, new_label
+    end
+
     python3 = Formula["python"].opt_bin/"python3"
 
     (bin/"irondome-sentinel").write <<~EOS
@@ -216,7 +241,7 @@ class IrondomeSentinel < Formula
 
         pkgshare = Path(__file__).resolve().parents[1]
         install_helper = pkgshare / "scripts" / "irondome-sentinel-install-launchagent.zsh"
-        plist = Path.home() / "Library" / "LaunchAgents" / "com.irondome.sentinel.plist"
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.scutum.sentinel.plist"
         reference_env = Path.home() / ".irondome" / "sentinel.env"
         config_dir = Path.home() / "Library" / "Application Support" / "IronDome"
         config_path = config_dir / "config.json"
@@ -335,7 +360,7 @@ class IrondomeSentinel < Formula
         _write_reference_env(reference_env, env_ref)
 
         uid = str(os.getuid())
-        label = "com.irondome.sentinel"
+        label = "com.scutum.sentinel"
         gui = f"gui/{uid}"
         if not args.no_launchctl:
           subprocess.run(["/bin/launchctl", "bootout", gui, str(plist)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

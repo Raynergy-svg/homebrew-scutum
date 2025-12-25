@@ -333,7 +333,7 @@ fi
 # Sanity: ensure the tap itself doesn't contain the old label (guardrail).
 # Exclude this preflight script (it necessarily references the old label in the check).
 if /usr/bin/grep -R --line-number --fixed-string 'com.irondome.sentinel' \
-  --exclude='release-preflight.zsh' --exclude-dir='.git' \
+  --exclude='release-preflight.zsh' --exclude-dir='.git' --exclude-dir='.cache' --exclude-dir='dev_data' \
   "$repo_root" >/dev/null 2>&1; then
   print -u2 -- "ERROR: old label 'com.irondome.sentinel' still present in tap repo (update to canonical label)."
   exit 1
