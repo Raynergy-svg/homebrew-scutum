@@ -29,8 +29,11 @@ class IrondomeSentinel < Formula
       import os
       import re
       import secrets
+      import shutil
       import subprocess
       import sys
+      import urllib.error
+      import urllib.request
       from pathlib import Path
 
 
@@ -159,6 +162,45 @@ class IrondomeSentinel < Formula
         os.chmod(path, 0o600)
 
 
+      def _normalize_ollama_host(value: str) -> str:
+        v = (value or "").strip()
+        if not v:
+          return "http://127.0.0.1:11434"
+        if v.startswith("http://") or v.startswith("https://"):
+          return v
+        return f"http://{v}"
+
+
+      def _check_ollama_if_requested(router_model: str) -> None:
+        if (router_model or "").strip().lower() != "ollama":
+          return
+
+        _print("")
+        _print("\033[1mOllama check\033[0m")
+
+        if shutil.which("ollama") is None:
+          _print("Ollama was selected as router_model but the 'ollama' binary was not found.")
+          _print("Install it via Homebrew: brew install ollama")
+          return
+
+        try:
+          subprocess.run(["ollama", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+        except Exception:
+          pass
+
+        host = _normalize_ollama_host(os.environ.get("OLLAMA_HOST", ""))
+        url = host.rstrip("/") + "/api/version"
+        try:
+          with urllib.request.urlopen(url, timeout=1.5) as resp:
+            _ = resp.read(4096)
+          _print(f"\033[32mOK\033[0m  Ollama daemon reachable at {host}")
+        except Exception:
+          _print(f"\033[33mNOTE\033[0m  Ollama installed, but daemon not reachable at {host}.")
+          _print("Start it with one of:")
+          _print("  - brew services start ollama")
+          _print("  - ollama serve")
+
+
       def main() -> int:
         parser = argparse.ArgumentParser(
           prog="irondome-sentinel-setup",
@@ -278,6 +320,8 @@ class IrondomeSentinel < Formula
         config_obj["router_model"] = router_model
         config_path.write_text(json.dumps(config_obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+        _check_ollama_if_requested(router_model)
+
         env_ref = {
           "SENTINEL_TO": sentinel_to,
           "SENTINEL_ALLOWED_HANDLES": ",".join(allowed),
@@ -377,14 +421,13 @@ class IrondomeSentinel < Formula
     <<~EOS
       Irondome-Sentinel installs scripts and LaunchAgent templates.
 
-      Ollama:
-        - Ollama is installed as a dependency. Start it once:
+      Ollama (local LLM):
+        - Installed automatically as a dependency.
+        - If you set router_model=ollama, ensure the daemon is running:
 
             brew services start ollama
 
-        - (Optional) pull a model:
-
-            ollama pull llama3.2:3b
+          (or run: ollama serve)
 
       Next steps:
         1) Run interactive setup:
@@ -413,5 +456,6 @@ class IrondomeSentinel < Formula
 
   test do
     assert_match "Iron Dome Sentinel", shell_output("#{bin}/irondome-sentinel --help")
+    assert_match(/ollama/i, shell_output("#{Formula['ollama'].opt_bin}/ollama --version"))
   end
 end
