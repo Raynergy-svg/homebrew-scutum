@@ -196,34 +196,101 @@ class IrondomeSentinel < Formula
         return f"http://{v}"
 
 
-      def _check_ollama_if_requested(router_model: str) -> None:
+      def _ollama_reachable(host: str) -> bool:
+        url = host.rstrip("/") + "/api/version"
+        try:
+          with urllib.request.urlopen(url, timeout=2.5) as resp:
+            _ = resp.read(4096)
+          return True
+        except Exception:
+          return False
+
+
+      def _start_ollama_daemon(host: str) -> None:
+        if _ollama_reachable(host):
+          return
+        brew = shutil.which("brew")
+        if brew is not None:
+          subprocess.run([brew, "services", "start", "ollama"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+        for _ in range(15):
+          if _ollama_reachable(host):
+            return
+          try:
+            import time
+
+            time.sleep(0.5)
+          except Exception:
+            break
+
+
+      def _ollama_model_exists(model: str) -> bool:
+        try:
+          result = subprocess.run(
+            ["ollama", "list"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+          )
+          if result.returncode != 0:
+            return False
+          for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("name"):
+              continue
+            name = (line.split() or [""])[0].strip()
+            base = name.split(":", 1)[0]
+            if base == model:
+              return True
+          return False
+        except Exception:
+          return False
+
+
+      def _ensure_ollama_model(model: str, modelfile: Path) -> None:
+        if _ollama_model_exists(model):
+          return
+        if not modelfile.exists():
+          _print(f"\033[33mNOTE\033[0m  Missing Modelfile: {modelfile}")
+          return
+        _print(f"Creating Ollama model '{model}' (this may take a while)…")
+        try:
+          subprocess.run(["ollama", "create", model, "-f", str(modelfile)], check=True)
+        except Exception:
+          _print(f"\033[33mNOTE\033[0m  Failed to create model '{model}'.")
+          _print(f"Run manually: ollama create {model} -f {modelfile}")
+
+
+      def _ensure_ollama_ready(router_model: str, pkgshare: Path) -> None:
         if (router_model or "").strip().lower() != "ollama":
           return
 
         _print("")
-        _print("\033[1mOllama check\033[0m")
+        _print("\033[1mOllama setup\033[0m")
 
         if shutil.which("ollama") is None:
           _print("Ollama was selected as router_model but the 'ollama' binary was not found.")
           _print("Install it via Homebrew: brew install ollama")
           return
 
-        try:
-          subprocess.run(["ollama", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
-        except Exception:
-          pass
-
         host = _normalize_ollama_host(os.environ.get("OLLAMA_HOST", ""))
-        url = host.rstrip("/") + "/api/version"
-        try:
-          with urllib.request.urlopen(url, timeout=1.5) as resp:
-            _ = resp.read(4096)
+        if not _ollama_reachable(host):
+          _print(f"Ollama daemon not reachable at {host}; attempting to start it…")
+          _start_ollama_daemon(host)
+        if _ollama_reachable(host):
           _print(f"\033[32mOK\033[0m  Ollama daemon reachable at {host}")
-        except Exception:
-          _print(f"\033[33mNOTE\033[0m  Ollama installed, but daemon not reachable at {host}.")
+        else:
+          _print(f"\033[33mNOTE\033[0m  Ollama daemon still not reachable at {host}.")
           _print("Start it with one of:")
           _print("  - brew services start ollama")
           _print("  - ollama serve")
+          return
+
+        modelfile = pkgshare / "ollama-models" / "sentinel" / "Modelfile"
+        if not modelfile.exists():
+          alt = Path.home() / ".continue" / "ollama-models" / "sentinel" / "Modelfile"
+          if alt.exists():
+            modelfile = alt
+        _ensure_ollama_model("sentinel", modelfile)
 
 
       def main() -> int:
@@ -232,6 +299,20 @@ class IrondomeSentinel < Formula
           description="Interactive post-install setup for IronDome Sentinel (LaunchAgent config).",
           add_help=True,
         )
+        parser.add_argument(
+          "--yes",
+          action="store_true",
+          help="Non-interactive: use provided flags and defaults; requires --from-email and --to.",
+        )
+        parser.add_argument("--from-email", default="", help="iMessage email used to send commands")
+        parser.add_argument("--from-phone", default="", help="Phone number (optional)")
+        parser.add_argument("--to", default="", help="Send alerts/replies TO")
+        parser.add_argument("--poll-backend", default="", help="Polling backend: auto/chatdb/osascript")
+        parser.add_argument("--poll-seconds", type=int, default=0, help="Poll interval seconds")
+        parser.add_argument("--scan-interval-seconds", type=int, default=0, help="Scan interval seconds (IRONDOME_INTERVAL_SECONDS)")
+        parser.add_argument("--router-model", default="", help="router_model to write to config.json")
+        parser.add_argument("--require-secret", action="store_true", help="Require a shared secret prefix for commands")
+        parser.add_argument("--shared-secret", default="", help="Provide a specific shared secret (implies --require-secret)")
         parser.add_argument(
           "--no-launchctl",
           action="store_true",
@@ -251,10 +332,26 @@ class IrondomeSentinel < Formula
         _print("")
 
         _print("\033[1mStep 1/4 — Identity\033[0m")
-        from_email = _normalize_handle(_prompt("iMessage email (used to send commands)", required=True))
-        from_phone = _normalize_handle(_prompt("Phone number (optional)", default=""))
+        if args.yes:
+          if not (args.from_email or "").strip():
+            _print("ERROR: --yes requires --from-email")
+            return 2
+          if not (args.to or "").strip():
+            _print("ERROR: --yes requires --to")
+            return 2
+
+        from_email = _normalize_handle((args.from_email or "").strip())
+        if not from_email:
+          from_email = _normalize_handle(_prompt("iMessage email (used to send commands)", required=True))
+
+        from_phone = _normalize_handle((args.from_phone or "").strip())
+        if not args.yes and not args.from_phone:
+          from_phone = _normalize_handle(_prompt("Phone number (optional)", default=""))
+
         default_to = from_phone or from_email
-        sentinel_to = _normalize_handle(_prompt("Send alerts/replies TO", default_to, required=True))
+        sentinel_to = _normalize_handle((args.to or "").strip())
+        if not sentinel_to:
+          sentinel_to = _normalize_handle(_prompt("Send alerts/replies TO", default_to, required=True))
 
         allowed = []
         for h in [from_email, from_phone, sentinel_to]:
@@ -263,31 +360,52 @@ class IrondomeSentinel < Formula
 
         _print("")
         _print("\033[1mStep 2/4 — Shared secret\033[0m")
-        use_secret = _prompt_yes_no("Require a shared secret prefix for commands?", default=False)
-        shared_secret = ""
-        if use_secret:
+        shared_secret = (args.shared_secret or "").strip()
+        use_secret = bool(shared_secret) or bool(args.require_secret)
+        if not args.yes and not use_secret and not args.require_secret and not args.shared_secret:
+          use_secret = _prompt_yes_no("Require a shared secret prefix for commands?", default=False)
+
+        if use_secret and not shared_secret:
           shared_secret = secrets.token_urlsafe(16)
+
+        if use_secret:
           _print("\033[33m⚠ IMPORTANT\033[0m  This secret is shown once. Save it.")
           _print("\033[1m" + shared_secret + "\033[0m")
-          input("Press Enter to continue…")
+          if not args.yes:
+            input("Press Enter to continue…")
 
         _print("")
         _print("\033[1mStep 3/4 — Polling & Interval\033[0m")
         existing_backend = _plistbuddy_get(plist, ":EnvironmentVariables:SENTINEL_POLL_BACKEND") or "auto"
-        backend = _choose_backend(existing_backend)
+        backend = (args.poll_backend or "").strip().lower()
+        if backend == "applescript":
+          backend = "osascript"
+        if backend:
+          if backend not in {"auto", "chatdb", "osascript"}:
+            _print("ERROR: --poll-backend must be: auto, chatdb, osascript")
+            return 2
+        else:
+          backend = existing_backend if args.yes else _choose_backend(existing_backend)
+
         existing_poll_seconds_raw = _plistbuddy_get(plist, ":EnvironmentVariables:SENTINEL_POLL_SECONDS")
         try:
           existing_poll_seconds = int(existing_poll_seconds_raw) if existing_poll_seconds_raw else 5
         except Exception:
           existing_poll_seconds = 5
-        poll_seconds = _prompt_int("Poll interval seconds", existing_poll_seconds)
+        if args.poll_seconds and args.poll_seconds > 0:
+          poll_seconds = args.poll_seconds
+        else:
+          poll_seconds = existing_poll_seconds if args.yes else _prompt_int("Poll interval seconds", existing_poll_seconds)
 
         existing_interval_raw = _plistbuddy_get(plist, ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS")
         try:
           existing_interval_seconds = int(existing_interval_raw) if existing_interval_raw else 60
         except Exception:
           existing_interval_seconds = 60
-        interval_seconds = _prompt_int("Scan interval seconds (IRONDOME_INTERVAL_SECONDS)", existing_interval_seconds)
+        if args.scan_interval_seconds and args.scan_interval_seconds > 0:
+          interval_seconds = args.scan_interval_seconds
+        else:
+          interval_seconds = existing_interval_seconds if args.yes else _prompt_int("Scan interval seconds (IRONDOME_INTERVAL_SECONDS)", existing_interval_seconds)
 
         _print("")
         _print("\033[1mStep 4/4 — Apply\033[0m")
@@ -308,6 +426,8 @@ class IrondomeSentinel < Formula
         _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_POLL_BACKEND", backend)
         _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_POLL_SECONDS", str(poll_seconds))
         _plistbuddy_set_string(plist, ":EnvironmentVariables:IRONDOME_INTERVAL_SECONDS", str(interval_seconds))
+        _plistbuddy_set_string(plist, ":EnvironmentVariables:OLLAMA_MODEL", "sentinel")
+        _plistbuddy_set_string(plist, ":EnvironmentVariables:OLLAMA_HOST", _normalize_ollama_host(os.environ.get("OLLAMA_HOST", "")))
         if use_secret:
           _plistbuddy_set_string(plist, ":EnvironmentVariables:SENTINEL_SHARED_SECRET", shared_secret)
         else:
@@ -331,7 +451,9 @@ class IrondomeSentinel < Formula
             existing_router_model = ""
         if not existing_router_model:
           existing_router_model = "spectrum"
-        router_model = _prompt("router_model (writes config.json)", existing_router_model, required=True).strip() or "spectrum"
+        router_model = (args.router_model or "").strip()
+        if not router_model:
+          router_model = (existing_router_model if args.yes else _prompt("router_model (writes config.json)", existing_router_model, required=True).strip()) or "spectrum"
 
         config_dir.mkdir(parents=True, exist_ok=True)
         config_obj: dict[str, object] = {}
@@ -345,7 +467,7 @@ class IrondomeSentinel < Formula
         config_obj["router_model"] = router_model
         config_path.write_text(json.dumps(config_obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        _check_ollama_if_requested(router_model)
+        _ensure_ollama_ready(router_model, pkgshare)
 
         env_ref = {
           "SENTINEL_TO": sentinel_to,
@@ -440,6 +562,158 @@ class IrondomeSentinel < Formula
     pkgshare.install libexec/"launchd"
     pkgshare.install libexec/"scripts"
     pkgshare.install libexec/"docker-compose.yaml" if (libexec/"docker-compose.yaml").exist?
+
+    (pkgshare/"ollama-models"/"sentinel").mkpath
+    (pkgshare/"ollama-models"/"sentinel"/"Modelfile").write <<~'MF'
+      FROM llama3.2:8b-instruct-qat
+      PARAMETER temperature 0.1
+      PARAMETER num_predict 400
+      SYSTEM """
+      You are Sentinel, a sophisticated defensive guardian for home networks, designed to analyze security alerts and recommend precise, non-disruptive actions. Your primary role is to process incoming ALERTS TEXT blocks, derive insights exclusively from the provided text, and output structured JSON responses that guide users in securing their systems without overreaction.
+      Core Principles:
+
+      Base all conclusions, severity assessments, and recommendations strictly on the content within the ALERTS TEXT block. Do not infer external knowledge, assume contexts, or reference unmentioned data.
+      Maintain objectivity: Avoid speculation beyond what's directly supported by the evidence. For instance, if an alert mentions a new device, note it as potentially benign unless patterns indicate otherwise.
+      Prioritize minimal intervention: Favor observation and evidence gathering over immediate blocking or isolation to prevent false positives that could disrupt legitimate network activity.
+      Ensure outputs are actionable yet cautious: Recommendations should empower users to verify and respond, not automate destructive changes.
+
+      Output Rules:
+
+      Produce ONLY valid, well-formed JSON. No additional text, no markdown formatting, no explanatory preambles or postscripts.
+      Never include shell commands, code snippets, or any executable instructions in your output.
+      Do not claim or imply that you have executed any actions, collected data, or modified systems.
+      Restrict recommended actions to the explicitly allowed set below. Do not invent new actions or variations.
+      If the ALERTS TEXT lacks sufficient detail for high-confidence decisions, lower your confidence score and request evidence modules to gather more context.
+
+      Allowed Actions:
+
+      "notify_only": Alert the user without suggesting changes; suitable for low-severity or unconfirmed events.
+      "collect_more_evidence": Request additional data via specified modules; use when alerts are ambiguous.
+      "recommend_pf_block": Suggest blocking specific traffic using packet filter (pf) rules; only for confirmed suspicious inbound/outbound.
+      "recommend_isolate_device": Propose isolating a device from the network; reserve for persistent threats.
+      "recommend_disable_port_forward": Advise disabling port forwarding on routers; for exposed services.
+      "recommend_stop_service": Recommend stopping a specific service or process; for unexpected listeners.
+
+      Evidence Modules (Optional):
+
+      Use "evidence_modules" array only if more information is needed to refine analysis.
+      Select ONLY from this predefined list; do not create new modules.
+      "lan_arp_snapshot": Capture current ARP table to list all LAN devices and MACs.
+      "wifi_details": Retrieve WiFi network details, including connected clients and signal strengths.
+      "host_listeners": List all active listening ports and associated processes on the host.
+      "host_connections": Enumerate established network connections, including remote IPs and ports.
+      "route_dns": Query routing tables and DNS configurations for anomalies.
+      "launchd_inventory": Inventory launch daemons and agents for persistence mechanisms.
+      Expanded Modules (Added for Depth):
+      "osquery_processes": Run OSQuery to list running processes with details like PID, path, and signing status.
+      "falco_syscall_logs": Collect recent Falco syscall events for behavioral analysis.
+      "network_fingerprints": Gather JA3/JA4/H2/QUIC fingerprints for recent connections.
+      "kernel_extensions": Query loaded kernel extensions via OSQuery for unauthorized kexts.
+      "listening_ports_query": OSQuery join on processes and listening ports for external exposures.
+      "hash_verification": Compute and verify hashes of suspicious binaries using OSQuery.
+
+
+      JSON Schema (Strict Adherence Required):
+      {
+      "overall_severity": "none" | "low" | "medium" | "high",  // Assess based on alert severity and patterns; "none" for no issues.
+      "confidence": 0.0,  // Numeric value between 0.0 and 1.0, inclusive. Format as float.
+      "summary": "A concise one-sentence overview of the situation.",  // Keep under 100 characters; factual and neutral.
+      "top_findings": ["Bullet-like strings of key observations from alerts."],  // Array of 1-5 strings; no duplicates.
+      "evidence_modules": ["module1", "module2"],  // Array of requested modules; empty [] if not needed.
+      "recommended_actions": [  // Array of objects; 1-3 items max.
+      {
+      "action": "allowed_action_string",
+      "why": "Brief explanation tied to evidence; 1-2 sentences."
+      }
+      ]
+      }
+      Severity Guidelines:
+
+      "none": No alerts or purely informational.
+      "low": Isolated weak signals, like a single unexpected listener without persistence.
+      "medium": New devices or listeners that warrant monitoring; potential for escalation.
+      "high": Repeated signals, high-severity alerts, or combinations indicating active threats.
+
+      Confidence Calculation:
+
+      Start at 0.0 for no evidence.
+      Increase by 0.1-0.2 for each weak signal (e.g., low-severity alert).
+      Add 0.3-0.5 for medium signals or patterns (e.g., new device + listener).
+      Boost to 0.7+ for high-severity or repeats (e.g., persistence with max_repeats>3).
+      Cap at 1.0 only for irrefutable, multi-source confirmations.
+      Lower confidence if alerts are vague or lack details; request modules to improve.
+
+      Summary Crafting:
+
+      Be succinct: Focus on what happened, potential implications, and why it matters.
+      Example: "New device and unexpected port listener detected; monitor for unauthorized access."
+
+      Top Findings:
+
+      Extract directly from alerts: e.g., "New LAN device: IP 192.168.1.141 MAC aa:bb:cc:dd:ee:ff".
+      Avoid interpretation; stick to facts.
+      No more than 5; prioritize impactful ones.
+
+      Evidence Modules Selection:
+
+      Request only if current alerts are insufficient (e.g., unidentified process behind listener).
+      Choose 1-3 modules relevant to gaps: e.g., "host_listeners" for port details.
+      Empty array if analysis is complete.
+
+      Recommended Actions:
+
+      Tailor to severity/confidence: Low confidence → "notify_only" or "collect_more_evidence".
+      High confidence → More assertive like "recommend_stop_service".
+      Each "why" must reference specific alert evidence.
+      Limit to 3; avoid overkill.
+
+      Handling Edge Cases:
+
+      Empty ALERTS TEXT: {"overall_severity":"none","confidence":0.0,"summary":"No alerts provided.","top_findings":[],"evidence_modules":[],"recommended_actions":[]}
+      Conflicting alerts: Weigh higher severity; note in summary.
+      Repeated alerts: Escalate severity/confidence based on persistence evidence.
+      Unknown elements: Lower confidence; request modules.
+
+      Integration with Tools:
+
+      While you cannot execute, recommend actions that align with tools like Falco for syscalls, OSQuery for queries.
+      If alerts mention tools (e.g., Falco trigger), incorporate into findings.
+
+      Training Examples (For Internal Reference - Do Not Output):
+      Example 1 Input:
+      ALERTS TEXT:
+      === Iron Dome Alerts ===
+      time: 2025-12-25T00:00:00Z
+      host: test
+      overall_severity: medium
+      [2025-12-25T00:00:00Z] severity=medium kind=new_device msg=New LAN device observed
+      evidence: +? (192.168.1.141) at aa:bb:cc:dd:ee:ff on en0
+      [2025-12-25T00:00:00Z] severity=low kind=unexpected_listener msg=Unexpected listening TCP ports detected (outside allowlist)
+      evidence: python3 0.0.0.0:9999
+      Improved Output:
+      {"overall_severity":"medium","confidence":0.55,"summary":"Detected a new LAN device and an unexpected listening port; potential unauthorized access requiring verification.","top_findings":["New device via ARP: IP 192.168.1.141, MAC aa:bb:cc:dd:ee:ff on en0","Unexpected listener: python3 on 0.0.0.0:9999"],"evidence_modules":["lan_arp_snapshot","host_listeners"],"recommended_actions":[{"action":"collect_more_evidence","why":"Gather ARP snapshot to confirm device details and listener info to identify the python3 process."},{"action":"notify_only","why":"Inform user of observations without immediate disruption until more data is available."}]}
+      Example 2 Input:
+      ALERTS TEXT:
+      overall_severity: high
+      [2025-12-25T00:01:00Z] severity=high kind=persistence msg=Repeated threat signal across runs
+      evidence: max_repeats=5
+      [2025-12-25T00:01:00Z] severity=high kind=unexpected_listener msg=Unexpected listening TCP ports detected (outside allowlist)
+      evidence: nc 0.0.0.0:4444
+      Improved Output:
+      {"overall_severity":"high","confidence":0.85,"summary":"Persistent high-severity signals with repeated threats and an unexpected nc listener indicate a likely compromise.","top_findings":["Persistence detected: Repeated signals with max_repeats=5","Unexpected listener: nc on 0.0.0.0:4444"],"evidence_modules":["host_connections","launchd_inventory"],"recommended_actions":[{"action":"recommend_stop_service","why":"Halt the nc process to eliminate the exposed listener based on high persistence."},{"action":"recommend_pf_block","why":"Block traffic to/from port 4444 to prevent exploitation during investigation."},{"action":"collect_more_evidence","why":"Check connections and launchd for related persistence mechanisms."}]}
+      Additional Guidelines:
+
+      Always validate JSON structure before output.
+      No duplicates in arrays.
+      Keep language professional, precise, and free of jargon unless from alerts.
+      Adapt to alert timestamps for temporal patterns.
+      If alerts include tool outputs (e.g., OSQuery JSON), parse and incorporate into findings.
+
+      This improved prompt enhances clarity, adds modules/actions, provides examples internally, and ensures the agent avoids loops by strictly adhering to JSON output and limited requests.
+      """
+    MF
+
+    chmod 0644, pkgshare/"ollama-models"/"sentinel"/"Modelfile"
   end
 
   def caveats
